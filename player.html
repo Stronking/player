@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>嵌入式全屏媒体播放器</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #000;
+    font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* ===== 全屏舞台 ===== */
+  .stage {
+    position: fixed;
+    inset: 0;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  .stage video,
+  .stage img {
+    max-width: 100%;
+    max-height: 100%;
+    display: block;
+    object-fit: contain;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+
+  .stage video { cursor: pointer; }
+  .stage.img-mode { background: #0a0a12; }
+
+  /* ===== 顶部信息条 ===== */
+  .topbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    padding: 18px 22px calc(18px + env(safe-area-inset-top, 0px));
+    color: #fff;
+    background: linear-gradient(to bottom, rgba(0,0,0,.7), transparent);
+    pointer-events: none;
+    z-index: 10;
+    transition: opacity .35s ease;
+  }
+
+  .topbar .title {
+    font-size: 16px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-shadow: 0 1px 4px rgba(0,0,0,.6);
+  }
+
+  .topbar .index {
+    font-size: 12px;
+    color: rgba(255,255,255,.65);
+    margin-top: 4px;
+    letter-spacing: 1px;
+  }
+
+  /* ===== 底部悬浮控制层 ===== */
+  .controls {
+    position: fixed;
+    left: 50%;
+    bottom: calc(26px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    padding: 12px 20px;
+    border-radius: 999px;
+    background: rgba(20, 20, 32, .45);
+    border: 1px solid rgba(255, 255, 255, .14);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .5);
+    z-index: 10;
+    transition: opacity .35s ease, transform .35s ease;
+  }
+
+  .controls button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 50px;
+    height: 50px;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, .1);
+    color: #fff;
+    cursor: pointer;
+    padding: 0;
+    transition: background .2s, transform .12s;
+  }
+
+  .controls button:hover { background: rgba(255, 255, 255, .24); }
+  .controls button:active { transform: scale(.9); }
+
+  .controls #playBtn {
+    width: 66px;
+    height: 66px;
+    background: linear-gradient(135deg, #6a5cff, #9b5cff);
+    box-shadow: 0 8px 22px rgba(106, 92, 255, .5);
+  }
+
+  .controls #playBtn:hover {
+    background: linear-gradient(135deg, #7a6cff, #ab6cff);
+  }
+
+  /* ===== 控件自动隐藏 ===== */
+  body.hide-ui .controls {
+    opacity: 0;
+    transform: translateX(-50%) translateY(16px);
+    pointer-events: none;
+  }
+  body.hide-ui .topbar { opacity: 0; }
+  body.hide-ui { cursor: none; }
+  body.hide-ui .vprogress { opacity: 0; }
+
+  /* ===== 进度条 ===== */
+  .progress {
+    position: fixed;
+    left: 0;
+    bottom: 0;
+    height: 3px;
+    width: 0;
+    background: linear-gradient(90deg, #6a5cff, #9b5cff);
+    z-index: 11;
+    pointer-events: none;
+    display: none;
+  }
+
+  .vprogress {
+    position: fixed;
+    left: 0;
+    bottom: 0;
+    height: 4px;
+    width: 100%;
+    background: rgba(255,255,255,.18);
+    z-index: 11;
+    cursor: pointer;
+    display: none;
+    transition: opacity .35s ease;
+  }
+
+  .vprogress .bar {
+    height: 100%;
+    width: 0;
+    background: linear-gradient(90deg, #6a5cff, #9b5cff);
+    pointer-events: none;
+  }
+
+  /* ===== 中央播放按钮 ===== */
+  .center-play {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 88px;
+    height: 88px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(0, 0, 0, .45);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    color: #fff;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 9;
+    transition: background .2s, transform .15s;
+  }
+
+  .center-play:hover { background: rgba(0, 0, 0, .65); }
+  .center-play:active { transform: translate(-50%, -50%) scale(.92); }
+  .center-play.show { display: flex; }
+
+  /* ===== 错误提示 ===== */
+  .err {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    max-width: 80%;
+    text-align: center;
+    color: #ff9b9b;
+    font-size: 14px;
+    line-height: 1.6;
+    display: none;
+    z-index: 12;
+    pointer-events: none;
+    text-shadow: 0 1px 4px rgba(0,0,0,.8);
+  }
+</style>
+</head>
+<body>
+
+  <!-- 全屏舞台 -->
+  <div class="stage" id="stage">
+    <video id="video" playsinline webkit-playsinline preload="metadata"></video>
+    <img id="image" alt="" style="display:none;">
+  </div>
+
+  <!-- 顶部信息 -->
+  <div class="topbar" id="topbar">
+    <div class="title" id="title">未加载</div>
+    <div class="index" id="index">0 / 0</div>
+  </div>
+
+  <!-- 中央播放提示 -->
+  <button class="center-play" id="centerPlay" title="播放">
+    <svg viewBox="0 0 24 24" width="40" height="40" fill="currentColor">
+      <path d="M8 5v14l11-7z"/>
+    </svg>
+  </button>
+
+  <!-- 底部悬浮控制层 -->
+  <div class="controls" id="controls">
+    <button id="prevBtn" title="上一个">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
+        <path d="M6 6h2v12H6zm12 0v12l-10-6z"/>
+      </svg>
+    </button>
+
+    <button id="playBtn" title="播放 / 暂停">
+      <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor">
+        <path d="M8 5v14l11-7z"/>
+      </svg>
+    </button>
+
+    <button id="nextBtn" title="下一个">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
+        <path d="M16 6h2v12h-2zM6 6l10 6-10 6z"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- 视频进度条 -->
+  <div class="vprogress" id="vprogress">
+    <div class="bar" id="vbar"></div>
+  </div>
+
+  <!-- 图片轮播进度条 -->
+  <div class="progress" id="progress"></div>
+
+  <!-- 错误提示 -->
+  <div class="err" id="err"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============================================================
+   * 1. 默认播放列表（iframe 未提供 data-playlist 时使用）
+   * ============================================================ */
+  var DEFAULT_PLAYLIST = [
+    { type: 'video', title: '示例视频 · Big Buck Bunny', src: 'https://www.w3schools.com/html/mov_bbb.mp4' },
+    { type: 'image', title: '示例图片 · 1',             src: 'https://picsum.photos/seed/frame1/1600/900' },
+    { type: 'image', title: '示例图片 · 2',             src: 'https://picsum.photos/seed/frame2/1600/900' },
+    { type: 'video', title: '示例视频 · Sintel 预告片',  src: 'https://media.w3.org/2010/05/sintel/trailer.mp4' },
+    { type: 'image', title: '示例图片 · 3',             src: 'https://picsum.photos/seed/frame3/1600/900' }
+  ];
+
+  /* ============================================================
+   * 2. 读取配置：优先 iframe 标签属性，其次 URL 参数
+   *    （同源时可通过 window.frameElement 读取宿主 iframe 的属性；
+   *      跨域会被浏览器拦截，此时自动回退到 URL 参数）
+   * ============================================================ */
+  var frameEl = null;
+  try { frameEl = window.frameElement; } catch (e) { frameEl = null; }
+
+  var urlParams = new URLSearchParams(location.search);
+
+  function readAttr(name) {
+    if (frameEl) {
+      try {
+        var v = frameEl.getAttribute('data-' + name);
+        if (v !== null && String(v).trim() !== '') return String(v);
+      } catch (e) { /* 跨域被拦截，忽略 */ }
+    }
+    var p = urlParams.get(name);
+    if (p !== null && String(p).trim() !== '') return String(p);
+    return null;
+  }
+
+  function toBool(v, dft) {
+    if (v === null) return dft;
+    return /^(1|true|yes|on)$/i.test(String(v).trim());
+  }
+
+  function toInt(v, dft, min) {
+    if (v === null) return dft;
+    var n = parseInt(v, 10);
+    if (isNaN(n) || n < min) return dft;
+    return n;
+  }
+
+  /* ============================================================
+   * 3. 播放列表解析：支持 JSON 与简易字符串两种写法
+   * ============================================================ */
+  var VIDEO_EXT = /\.(mp4|webm|ogv|ogg|mov|m4v)(\?|#|$)/i;
+  var IMAGE_EXT = /\.(jpe?g|png|gif|webp|avif|svg|bmp)(\?|#|$)/i;
+
+  function guessType(src) {
+    var s = String(src).toLowerCase();
+    if (VIDEO_EXT.test(s)) return 'video';
+    if (IMAGE_EXT.test(s)) return 'image';
+    if (/(image|photo|pic|img|avatar|cover|thumb)/.test(s)) return 'image';
+    return 'video';
+  }
+
+  function normalizeType(type, src) {
+    if (!type) return guessType(src);
+    var s = String(type).toLowerCase().trim();
+    if (['video', 'mp4', 'mov', 'movie', 'webm', 'film'].indexOf(s) > -1) return 'video';
+    if (['image', 'img', 'pic', 'photo', 'picture', 'jpg', 'jpeg', 'png', 'gif', 'webp'].indexOf(s) > -1) return 'image';
+    return guessType(src);
+  }
+
+  function filenameFrom(src) {
+    try {
+      var clean = String(src).split('?')[0].split('#')[0];
+      var base = clean.substring(clean.lastIndexOf('/') + 1);
+      return decodeURIComponent(base) || '';
+    } catch (e) { return ''; }
+  }
+
+  function makeItem(type, title, src) {
+    src = String(src == null ? '' : src).trim();
+    if (!src) return null;
+    var t = normalizeType(type, src);
+    var name = String(title == null ? '' : title).trim();
+    if (!name) name = filenameFrom(src) || (t === 'video' ? '视频' : '图片');
+    return { type: t, title: name, src: src };
+  }
+
+  function parsePlaylist(raw) {
+    if (raw === null || raw === undefined) return null;
+    var text = String(raw).trim();
+    if (!text) return null;
+
+    /* ---- ① 尝试 JSON 格式 ---- */
+    if (text.charAt(0) === '[' || text.charAt(0) === '{') {
+      try {
+        var data = JSON.parse(text);
+        var arr = null;
+        if (Array.isArray(data)) arr = data;
+        else if (data && Array.isArray(data.playlist)) arr = data.playlist;
+        else if (data && Array.isArray(data.items)) arr = data.items;
+
+        if (arr && arr.length) {
+          var jsonList = arr.map(function (it) {
+            if (typeof it === 'string') return makeItem('', '', it);
+            if (it && typeof it === 'object') {
+              return makeItem(it.type, it.title || it.name || it.label, it.src || it.url || it.file);
+            }
+            return null;
+          }).filter(Boolean);
+          if (jsonList.length) return jsonList;
+        }
+      } catch (e) { /* 解析失败，继续尝试简易格式 */ }
+    }
+
+    /* ---- ② 简易格式：条目用 ; 或换行分隔，字段用 | 分隔 ----
+     *    支持写法：
+     *      地址
+     *      标题|地址
+     *      video|地址        （或 image|地址）
+     *      video|标题|地址
+     */
+    var simpleList = text
+      .split(/\s*[;\n]\s*/)
+      .map(function (line) { return line.trim(); })
+      .filter(function (line) { return line.length > 0; })
+      .map(function (line) {
+        var parts = line.split('|').map(function (s) { return s.trim(); });
+        if (parts.length === 1) return makeItem('', '', parts[0]);
+        if (parts.length === 2) {
+          if (/^(video|image|img|pic|photo|picture|mp4|movie)$/i.test(parts[0])) {
+            return makeItem(parts[0], '', parts[1]);
+          }
+          return makeItem('', parts[0], parts[1]);
+        }
+        return makeItem(parts[0], parts[1], parts.slice(2).join('|'));
+      })
+      .filter(Boolean);
+
+    return simpleList.length ? simpleList : null;
+  }
+
+  /* ============================================================
+   * 4. 汇总配置
+   * ============================================================ */
+  var CONFIG = {
+    playlist:      parsePlaylist(readAttr('playlist')) || DEFAULT_PLAYLIST,
+    autoplay:      toBool(readAttr('autoplay'), false),
+    muted:         toBool(readAttr('muted'), false),
+    loop:          toBool(readAttr('loop'), true),
+    slideDuration: toInt(readAttr('slide-duration'), 4000, 800),
+    hideDelay:     toInt(readAttr('hide-delay'), 2600, 0),
+    startIndex:    toInt(readAttr('index'), 0, 0)
+  };
+
+  /* ============================================================
+   * 5. 元素引用
+   * ============================================================ */
+  var stage      = document.getElementById('stage');
+  var videoEl    = document.getElementById('video');
+  var imgEl      = document.getElementById('image');
+  var titleEl    = document.getElementById('title');
+  var indexEl    = document.getElementById('index');
+  var playBtn    = document.getElementById('playBtn');
+  var prevBtn    = document.getElementById('prevBtn');
+  var nextBtn    = document.getElementById('nextBtn');
+  var centerPlay = document.getElementById('centerPlay');
+  var vprogress  = document.getElementById('vprogress');
+  var vbar       = document.getElementById('vbar');
+  var progress   = document.getElementById('progress');
+  var errEl      = document.getElementById('err');
+
+  var ICON_PLAY  = '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+  var ICON_PAUSE = '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
+
+  var current    = 0;
+  var slideTimer = null;
+  var progTimer  = null;
+  var hideTimer  = null;
+
+  /* ============================================================
+   * 6. 基础工具
+   * ============================================================ */
+  function currentItem() { return CONFIG.playlist[current] || null; }
+
+  function isPlaying() {
+    var item = currentItem();
+    if (!item) return false;
+    return item.type === 'video' ? !videoEl.paused : slideTimer !== null;
+  }
+
+  function updatePlayIcon() {
+    var playing = isPlaying();
+    playBtn.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
+    centerPlay.classList.toggle('show', !playing && !!currentItem());
+  }
+
+  function showError(msg) {
+    errEl.textContent = msg;
+    errEl.style.display = 'block';
+  }
+
+  function hideError() {
+    errEl.style.display = 'none';
+  }
+
+  /* ============================================================
+   * 7. 控件自动隐藏
+   * ============================================================ */
+  function showUI() {
+    document.body.classList.remove('hide-ui');
+    clearTimeout(hideTimer);
+    if (CONFIG.hideDelay > 0) {
+      hideTimer = setTimeout(function () {
+        document.body.classList.add('hide-ui');
+      }, CONFIG.hideDelay);
+    }
+  }
+
+  ['mousemove', 'mousedown', 'touchstart', 'keydown', 'wheel'].forEach(function (evt) {
+    window.addEventListener(evt, showUI, { passive: true });
+  });
+
+  /* ============================================================
+   * 8. 图片轮播
+   * ============================================================ */
+  function stopSlide() {
+    clearTimeout(slideTimer);
+    clearInterval(progTimer);
+    slideTimer = null;
+    progTimer = null;
+    progress.style.width = '0';
+  }
+
+  function startSlide() {
+    stopSlide();
+    progress.style.width = '0';
+
+    var startTime = performance.now();
+    progTimer = setInterval(function () {
+      var pct = Math.min((performance.now() - startTime) / CONFIG.slideDuration, 1);
+      progress.style.width = (pct * 100) + '%';
+    }, 50);
+
+    slideTimer = setTimeout(function () {
+      stopSlide();
+      autoAdvance();
+    }, CONFIG.slideDuration);
+
+    updatePlayIcon();
+  }
+
+  /* 自动切到下一个（用于视频播完 / 图片到时） */
+  function autoAdvance() {
+    var next = current + 1;
+    if (next >= CONFIG.playlist.length) {
+      if (!CONFIG.loop) { updatePlayIcon(); return; }
+      next = 0;
+    }
+    load(next, true);
+  }
+
+  /* ============================================================
+   * 9. 视频进度条
+   * ============================================================ */
+  videoEl.addEventListener('timeupdate', function () {
+    if (!videoEl.duration) return;
+    vbar.style.width = (videoEl.currentTime / videoEl.duration * 100) + '%';
+  });
+
+  vprogress.addEventListener('click', function (e) {
+    e.stopPropagation();
+    if (!videoEl.duration) return;
+    var rect = vprogress.getBoundingClientRect();
+    var ratio = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1);
+    videoEl.currentTime = ratio * videoEl.duration;
+    showUI();
+  });
+
+  /* ============================================================
+   * 10. 核心：加载指定索引的媒体
+   * ============================================================ */
+  function load(index, autoplay) {
+    var list = CONFIG.playlist;
+    if (!list.length) return;
+
+    stopSlide();
+    videoEl.pause();
+    hideError();
+
+    if (CONFIG.loop) {
+      current = ((index % list.length) + list.length) % list.length;
+    } else {
+      current = Math.max(0, Math.min(index, list.length - 1));
+    }
+
+    var item = list[current];
+
+    titleEl.textContent = item.title || '';
+    indexEl.textContent = (current + 1) + ' / ' + list.length;
+
+    if (item.type === 'video') {
+      /* ---------- 视频 ---------- */
+      stage.classList.remove('img-mode');
+
+      imgEl.style.display = 'none';
+      imgEl.removeAttribute('src');
+
+      progress.style.display = 'none';
+      vprogress.style.display = 'block';
+
+      videoEl.style.display = 'block';
+      videoEl.muted = CONFIG.muted;
+      videoEl.src = item.src;
+
+      if (autoplay) {
+        var p = videoEl.play();
+        if (p && p.catch) p.catch(function () {});
+      }
+    } else {
+      /* ---------- 图片 ---------- */
+      stage.classList.add('img-mode');
+
+      videoEl.removeAttribute('src');
+      videoEl.load();
+      videoEl.style.display = 'none';
+
+      vprogress.style.display = 'none';
+      progress.style.display = 'block';
+
+      imgEl.style.display = 'block';
+      imgEl.src = item.src;
+
+      if (autoplay) startSlide();
+    }
+
+    updatePlayIcon();
+    showUI();
+  }
+
+  function go(step) {
+    var keepPlaying = isPlaying();
+    var next = current + step;
+
+    if (!CONFIG.loop) {
+      next = Math.max(0, Math.min(next, CONFIG.playlist.length - 1));
+      if (next === current) return;
+    }
+    load(next, keepPlaying);
+  }
+
+  /* ============================================================
+   * 11. 按钮事件
+   * ============================================================ */
+  playBtn.addEventListener('click', function () {
+    var item = currentItem();
+    if (!item) return;
+
+    if (item.type === 'video') {
+      if (videoEl.paused) {
+        var p = videoEl.play();
+        if (p && p.catch) p.catch(function () {});
+      } else {
+        videoEl.pause();
+      }
+    } else {
+      if (slideTimer) stopSlide();
+      else startSlide();
+    }
+    updatePlayIcon();
+    showUI();
+  });
+
+  prevBtn.addEventListener('click', function () { go(-1); });
+  nextBtn.addEventListener('click', function () { go(1); });
+
+  centerPlay.addEventListener('click', function () { playBtn.click(); });
+  videoEl.addEventListener('click', function () { playBtn.click(); });
+
+  stage.addEventListener('click', function (e) {
+    if (e.target === stage) {
+      document.body.classList.toggle('hide-ui');
+    }
+  });
+
+  /* ============================================================
+   * 12. 媒体事件同步
+   * ============================================================ */
+  videoEl.addEventListener('play',  function () { updatePlayIcon(); showUI(); });
+  videoEl.addEventListener('pause', updatePlayIcon);
+
+  videoEl.addEventListener('ended', autoAdvance);
+
+  videoEl.addEventListener('error', function () {
+    if (!videoEl.getAttribute('src')) return;
+    var it = currentItem();
+    showError('视频加载失败' + (it ? '：' + it.title : ''));
+    updatePlayIcon();
+  });
+
+  imgEl.addEventListener('error', function () {
+    if (!imgEl.getAttribute('src')) return;
+    var it = currentItem();
+    showError('图片加载失败' + (it ? '：' + it.title : ''));
+  });
+
+  /* ============================================================
+   * 13. 键盘快捷键
+   * ============================================================ */
+  window.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowLeft')  go(-1);
+    if (e.key === 'ArrowRight') go(1);
+    if (e.key === ' ') { e.preventDefault(); playBtn.click(); }
+    if (e.key.toLowerCase() === 'f') toggleFullscreen();
+  });
+
+  /* ============================================================
+   * 14. 浏览器全屏（iframe 内需宿主页面加 allowfullscreen）
+   * ============================================================ */
+  function toggleFullscreen() {
+    try {
+      if (!document.fullscreenElement) {
+        var el = document.documentElement;
+        var req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+        if (req) { var r = req.call(el); if (r && r.catch) r.catch(function () {}); }
+      } else {
+        var exit = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
+        if (exit) { var r2 = exit.call(document); if (r2 && r2.catch) r2.catch(function () {}); }
+      }
+    } catch (e) { /* 全屏被宿主页面禁止时忽略 */ }
+  }
+
+  stage.addEventListener('dblclick', toggleFullscreen);
+
+  /* ============================================================
+   * 15. 初始化
+   * ============================================================ */
+  load(CONFIG.startIndex, CONFIG.autoplay);
+  showUI();
+
+  /* 把当前播放项信息发给宿主页面（可选，方便父页面联动） */
+  try {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({
+        type: 'media-player-ready',
+        total: CONFIG.playlist.length
+      }, '*');
+    }
+  } catch (e) { /* 忽略 */ }
+
+})();
+</script>
+
+</body>
+</html>
