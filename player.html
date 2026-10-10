@@ -16,7 +16,6 @@
     -webkit-tap-highlight-color: transparent;
   }
 
-  /* ===== 全屏舞台 ===== */
   .stage {
     position: fixed;
     inset: 0;
@@ -40,7 +39,6 @@
   .stage video { cursor: pointer; }
   .stage.img-mode { background: #0a0a12; }
 
-  /* ===== 顶部信息条 ===== */
   .topbar {
     position: fixed;
     top: 0;
@@ -70,7 +68,6 @@
     letter-spacing: 1px;
   }
 
-  /* ===== 底部悬浮控制层 ===== */
   .controls {
     position: fixed;
     left: 50%;
@@ -119,7 +116,6 @@
     background: linear-gradient(135deg, #7a6cff, #ab6cff);
   }
 
-  /* ===== 控件自动隐藏 ===== */
   body.hide-ui .controls {
     opacity: 0;
     transform: translateX(-50%) translateY(16px);
@@ -129,7 +125,6 @@
   body.hide-ui { cursor: none; }
   body.hide-ui .vprogress { opacity: 0; }
 
-  /* ===== 进度条 ===== */
   .progress {
     position: fixed;
     left: 0;
@@ -162,7 +157,6 @@
     pointer-events: none;
   }
 
-  /* ===== 中央播放按钮 ===== */
   .center-play {
     position: fixed;
     left: 50%;
@@ -188,7 +182,32 @@
   .center-play:active { transform: translate(-50%, -50%) scale(.92); }
   .center-play.show { display: flex; }
 
-  /* ===== 错误提示 ===== */
+  .loading {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    color: rgba(255,255,255,.7);
+    font-size: 14px;
+    letter-spacing: 1px;
+    z-index: 12;
+    display: none;
+    pointer-events: none;
+  }
+  .loading.show { display: block; }
+  .loading::after {
+    content: '';
+    display: inline-block;
+    width: 12px; height: 12px;
+    margin-left: 8px;
+    border: 2px solid rgba(255,255,255,.25);
+    border-top-color: #9b5cff;
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+    vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
   .err {
     position: fixed;
     left: 50%;
@@ -208,26 +227,22 @@
 </head>
 <body>
 
-  <!-- 全屏舞台 -->
   <div class="stage" id="stage">
     <video id="video" playsinline webkit-playsinline preload="metadata"></video>
     <img id="image" alt="" style="display:none;">
   </div>
 
-  <!-- 顶部信息 -->
   <div class="topbar" id="topbar">
-    <div class="title" id="title">未加载</div>
+    <div class="title" id="title">加载中…</div>
     <div class="index" id="index">0 / 0</div>
   </div>
 
-  <!-- 中央播放提示 -->
   <button class="center-play" id="centerPlay" title="播放">
     <svg viewBox="0 0 24 24" width="40" height="40" fill="currentColor">
       <path d="M8 5v14l11-7z"/>
     </svg>
   </button>
 
-  <!-- 底部悬浮控制层 -->
   <div class="controls" id="controls">
     <button id="prevBtn" title="上一个">
       <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
@@ -248,24 +263,139 @@
     </button>
   </div>
 
-  <!-- 视频进度条 -->
   <div class="vprogress" id="vprogress">
     <div class="bar" id="vbar"></div>
   </div>
 
-  <!-- 图片轮播进度条 -->
   <div class="progress" id="progress"></div>
 
-  <!-- 错误提示 -->
+  <div class="loading" id="loading">加载播放列表</div>
+
   <div class="err" id="err"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/axios@1.7.7/dist/axios.min.js"></script>
 <script>
 (function () {
   'use strict';
 
-  /* ============================================================
-   * 1. 默认播放列表（iframe 未提供 data-playlist 时使用）
-   * ============================================================ */
+  /* ============================================================================
+   *  ①  接口配置
+   * ============================================================================ */
+
+  var API_CONFIG = {
+    // 接口地址
+    url: 'https://imgly.net/api/public-gallery',
+
+    // 请求方式
+    method: 'get',
+
+    // 超时（毫秒）
+    timeout: 15000,
+
+    // 请求参数（GET 会拼到 URL 上）
+    // limit 表示一次取多少条；想多取就改大，比如 50、100
+    params: { limit: 10 },
+
+    // 请求头（需要 token 时加，如 { Authorization: 'Bearer xxx' }）
+    headers: null,
+
+    // 接口失败时是否回退到 DEFAULT_PLAYLIST
+    fallbackToDefault: true
+  };
+
+
+  /* ============================================================================
+   *  ②  针对 imgly.net /api/public-gallery 接口的解析
+   *
+   *  接口返回结构：
+   *  {
+   *    "items": [
+   *      // 普通媒体项
+   *      { "url": "...", "name": "...", "play_url": "...", "original_name": "..." },
+   *      // 文件夹项（需要展开 folder_previews）
+   *      { "is_folder": true, "folder_previews": [ {...}, {...} ], ... }
+   *    ],
+   *    "total": 2060
+   *  }
+   *
+   *  规则：
+   *    - 文件夹 → 展开 folder_previews 里的每一项，平铺进播放列表
+   *    - 视频取 play_url（没有则退回 url）
+   *    - 图片取 url
+   *    - 标题优先 original_name，其次 name / processed_name
+   *    - 类型交给播放器按后缀自动识别
+   * ============================================================================ */
+
+  function parseApiResponse(res) {
+    var data = res && res.data;
+    if (!data) {
+      console.warn('[player] 接口返回为空');
+      return [];
+    }
+
+    // 兼容几种常见的包裹层级
+    var items = null;
+    if (Array.isArray(data)) items = data;
+    else if (Array.isArray(data.items)) items = data.items;
+    else if (Array.isArray(data.list)) items = data.list;
+    else if (data.data && Array.isArray(data.data.items)) items = data.data.items;
+
+    if (!items) {
+      console.warn('[player] 未找到 items 数组，实际返回：', data);
+      return [];
+    }
+
+    var result = [];
+
+    // 把单个媒体对象压入结果
+    function pushMedia(it, folderName) {
+      if (!it || typeof it !== 'object') return;
+
+      // 视频优先用 play_url（转码后的播放地址）
+      var url = it.play_url || it.url || it.src || '';
+      if (!url) return;
+
+      // 标题优先原文件名
+      var name = it.original_name
+              || it.name
+              || it.processed_name
+              || it.title
+              || '';
+
+      if (!name && folderName) name = folderName;
+
+      result.push({
+        type: '',      // 空字符串 → 播放器按 URL 后缀自动识别视频/图片
+        title: name,
+        src: url
+      });
+    }
+
+    items.forEach(function (it) {
+      if (!it || typeof it !== 'object') return;
+
+      // 文件夹：展开所有预览子项
+      if (it.is_folder && Array.isArray(it.folder_previews)) {
+        var folderName = it.folder_name || it.name || '';
+        it.folder_previews.forEach(function (child) {
+          pushMedia(child, folderName);
+        });
+        return;
+      }
+
+      // 普通媒体项
+      pushMedia(it);
+    });
+
+    console.log('[player] 解析出 ' + result.length + ' 条媒体（接口 total=' + (data.total || '?') + '）');
+    return result;
+  }
+
+
+  /* ============================================================================
+   *  ③  默认播放列表（仅接口失败时兜底）
+   * ============================================================================ */
+
   var DEFAULT_PLAYLIST = [
     { type: 'video', title: '示例视频 · Big Buck Bunny', src: 'https://www.w3schools.com/html/mov_bbb.mp4' },
     { type: 'image', title: '示例图片 · 1',             src: 'https://picsum.photos/seed/frame1/1600/900' },
@@ -274,43 +404,11 @@
     { type: 'image', title: '示例图片 · 3',             src: 'https://picsum.photos/seed/frame3/1600/900' }
   ];
 
-  /* ============================================================
-   * 2. 读取配置：优先 iframe 标签属性，其次 URL 参数
-   *    （同源时可通过 window.frameElement 读取宿主 iframe 的属性；
-   *      跨域会被浏览器拦截，此时自动回退到 URL 参数）
-   * ============================================================ */
-  var frameEl = null;
-  try { frameEl = window.frameElement; } catch (e) { frameEl = null; }
 
-  var urlParams = new URLSearchParams(location.search);
+  /* ============================================================================
+   *  以下为播放器核心逻辑，无需修改
+   * ============================================================================ */
 
-  function readAttr(name) {
-    if (frameEl) {
-      try {
-        var v = frameEl.getAttribute('data-' + name);
-        if (v !== null && String(v).trim() !== '') return String(v);
-      } catch (e) { /* 跨域被拦截，忽略 */ }
-    }
-    var p = urlParams.get(name);
-    if (p !== null && String(p).trim() !== '') return String(p);
-    return null;
-  }
-
-  function toBool(v, dft) {
-    if (v === null) return dft;
-    return /^(1|true|yes|on)$/i.test(String(v).trim());
-  }
-
-  function toInt(v, dft, min) {
-    if (v === null) return dft;
-    var n = parseInt(v, 10);
-    if (isNaN(n) || n < min) return dft;
-    return n;
-  }
-
-  /* ============================================================
-   * 3. 播放列表解析：支持 JSON 与简易字符串两种写法
-   * ============================================================ */
   var VIDEO_EXT = /\.(mp4|webm|ogv|ogg|mov|m4v)(\?|#|$)/i;
   var IMAGE_EXT = /\.(jpe?g|png|gif|webp|avif|svg|bmp)(\?|#|$)/i;
 
@@ -347,40 +445,73 @@
     return { type: t, title: name, src: src };
   }
 
+  function parseArray(arr) {
+    if (!Array.isArray(arr) || !arr.length) return null;
+    var list = arr.map(function (it) {
+      if (typeof it === 'string') return makeItem('', '', it);
+      if (it && typeof it === 'object') {
+        return makeItem(
+          it.type || it.mediaType,
+          it.title || it.name || it.label,
+          it.src || it.url || it.file || it.path
+        );
+      }
+      return null;
+    }).filter(Boolean);
+    return list.length ? list : null;
+  }
+
+  var frameEl = null;
+  try { frameEl = window.frameElement; } catch (e) { frameEl = null; }
+  var urlParams = new URLSearchParams(location.search);
+
+  function readAttr(name) {
+    if (frameEl) {
+      try {
+        var v = frameEl.getAttribute('data-' + name);
+        if (v !== null && String(v).trim() !== '') return String(v);
+      } catch (e) { /* 跨域，忽略 */ }
+    }
+    var p = urlParams.get(name);
+    if (p !== null && String(p).trim() !== '') return String(p);
+    return null;
+  }
+
+  function toBool(v, dft) {
+    if (v === null) return dft;
+    return /^(1|true|yes|on)$/i.test(String(v).trim());
+  }
+
+  function toInt(v, dft, min) {
+    if (v === null) return dft;
+    var n = parseInt(v, 10);
+    if (isNaN(n) || n < min) return dft;
+    return n;
+  }
+
   function parsePlaylist(raw) {
     if (raw === null || raw === undefined) return null;
     var text = String(raw).trim();
     if (!text) return null;
 
-    /* ---- ① 尝试 JSON 格式 ---- */
     if (text.charAt(0) === '[' || text.charAt(0) === '{') {
       try {
         var data = JSON.parse(text);
-        var arr = null;
-        if (Array.isArray(data)) arr = data;
-        else if (data && Array.isArray(data.playlist)) arr = data.playlist;
-        else if (data && Array.isArray(data.items)) arr = data.items;
-
-        if (arr && arr.length) {
-          var jsonList = arr.map(function (it) {
-            if (typeof it === 'string') return makeItem('', '', it);
-            if (it && typeof it === 'object') {
-              return makeItem(it.type, it.title || it.name || it.label, it.src || it.url || it.file);
+        if (Array.isArray(data)) {
+          var r = parseArray(data);
+          if (r) return r;
+        } else if (data && typeof data === 'object') {
+          var keys = ['playlist', 'items', 'list', 'data', 'result', 'records', 'rows'];
+          for (var i = 0; i < keys.length; i++) {
+            if (Array.isArray(data[keys[i]])) {
+              var r2 = parseArray(data[keys[i]]);
+              if (r2) return r2;
             }
-            return null;
-          }).filter(Boolean);
-          if (jsonList.length) return jsonList;
+          }
         }
-      } catch (e) { /* 解析失败，继续尝试简易格式 */ }
+      } catch (e) { /* 继续 */ }
     }
 
-    /* ---- ② 简易格式：条目用 ; 或换行分隔，字段用 | 分隔 ----
-     *    支持写法：
-     *      地址
-     *      标题|地址
-     *      video|地址        （或 image|地址）
-     *      video|标题|地址
-     */
     var simpleList = text
       .split(/\s*[;\n]\s*/)
       .map(function (line) { return line.trim(); })
@@ -401,11 +532,8 @@
     return simpleList.length ? simpleList : null;
   }
 
-  /* ============================================================
-   * 4. 汇总配置
-   * ============================================================ */
   var CONFIG = {
-    playlist:      parsePlaylist(readAttr('playlist')) || DEFAULT_PLAYLIST,
+    playlist:      parsePlaylist(readAttr('playlist')),
     autoplay:      toBool(readAttr('autoplay'), false),
     muted:         toBool(readAttr('muted'), false),
     loop:          toBool(readAttr('loop'), true),
@@ -414,9 +542,6 @@
     startIndex:    toInt(readAttr('index'), 0, 0)
   };
 
-  /* ============================================================
-   * 5. 元素引用
-   * ============================================================ */
   var stage      = document.getElementById('stage');
   var videoEl    = document.getElementById('video');
   var imgEl      = document.getElementById('image');
@@ -430,6 +555,7 @@
   var vbar       = document.getElementById('vbar');
   var progress   = document.getElementById('progress');
   var errEl      = document.getElementById('err');
+  var loadingEl  = document.getElementById('loading');
 
   var ICON_PLAY  = '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
   var ICON_PAUSE = '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
@@ -439,10 +565,10 @@
   var progTimer  = null;
   var hideTimer  = null;
 
-  /* ============================================================
-   * 6. 基础工具
-   * ============================================================ */
-  function currentItem() { return CONFIG.playlist[current] || null; }
+  function currentItem() {
+    var list = CONFIG.playlist || [];
+    return list[current] || null;
+  }
 
   function isPlaying() {
     var item = currentItem();
@@ -456,18 +582,11 @@
     centerPlay.classList.toggle('show', !playing && !!currentItem());
   }
 
-  function showError(msg) {
-    errEl.textContent = msg;
-    errEl.style.display = 'block';
-  }
+  function showError(msg) { errEl.textContent = msg; errEl.style.display = 'block'; }
+  function hideError()    { errEl.style.display = 'none'; }
+  function showLoading(t) { loadingEl.textContent = t || '加载中'; loadingEl.classList.add('show'); }
+  function hideLoading()  { loadingEl.classList.remove('show'); }
 
-  function hideError() {
-    errEl.style.display = 'none';
-  }
-
-  /* ============================================================
-   * 7. 控件自动隐藏
-   * ============================================================ */
   function showUI() {
     document.body.classList.remove('hide-ui');
     clearTimeout(hideTimer);
@@ -482,9 +601,6 @@
     window.addEventListener(evt, showUI, { passive: true });
   });
 
-  /* ============================================================
-   * 8. 图片轮播
-   * ============================================================ */
   function stopSlide() {
     clearTimeout(slideTimer);
     clearInterval(progTimer);
@@ -511,19 +627,17 @@
     updatePlayIcon();
   }
 
-  /* 自动切到下一个（用于视频播完 / 图片到时） */
   function autoAdvance() {
+    var list = CONFIG.playlist || [];
+    if (!list.length) return;
     var next = current + 1;
-    if (next >= CONFIG.playlist.length) {
+    if (next >= list.length) {
       if (!CONFIG.loop) { updatePlayIcon(); return; }
       next = 0;
     }
     load(next, true);
   }
 
-  /* ============================================================
-   * 9. 视频进度条
-   * ============================================================ */
   videoEl.addEventListener('timeupdate', function () {
     if (!videoEl.duration) return;
     vbar.style.width = (videoEl.currentTime / videoEl.duration * 100) + '%';
@@ -538,11 +652,8 @@
     showUI();
   });
 
-  /* ============================================================
-   * 10. 核心：加载指定索引的媒体
-   * ============================================================ */
   function load(index, autoplay) {
-    var list = CONFIG.playlist;
+    var list = CONFIG.playlist || [];
     if (!list.length) return;
 
     stopSlide();
@@ -556,17 +667,15 @@
     }
 
     var item = list[current];
+    if (!item) return;
 
     titleEl.textContent = item.title || '';
     indexEl.textContent = (current + 1) + ' / ' + list.length;
 
     if (item.type === 'video') {
-      /* ---------- 视频 ---------- */
       stage.classList.remove('img-mode');
-
       imgEl.style.display = 'none';
       imgEl.removeAttribute('src');
-
       progress.style.display = 'none';
       vprogress.style.display = 'block';
 
@@ -579,13 +688,10 @@
         if (p && p.catch) p.catch(function () {});
       }
     } else {
-      /* ---------- 图片 ---------- */
       stage.classList.add('img-mode');
-
       videoEl.removeAttribute('src');
       videoEl.load();
       videoEl.style.display = 'none';
-
       vprogress.style.display = 'none';
       progress.style.display = 'block';
 
@@ -600,19 +706,18 @@
   }
 
   function go(step) {
+    var list = CONFIG.playlist || [];
+    if (!list.length) return;
     var keepPlaying = isPlaying();
     var next = current + step;
 
     if (!CONFIG.loop) {
-      next = Math.max(0, Math.min(next, CONFIG.playlist.length - 1));
+      next = Math.max(0, Math.min(next, list.length - 1));
       if (next === current) return;
     }
     load(next, keepPlaying);
   }
 
-  /* ============================================================
-   * 11. 按钮事件
-   * ============================================================ */
   playBtn.addEventListener('click', function () {
     var item = currentItem();
     if (!item) return;
@@ -639,17 +744,11 @@
   videoEl.addEventListener('click', function () { playBtn.click(); });
 
   stage.addEventListener('click', function (e) {
-    if (e.target === stage) {
-      document.body.classList.toggle('hide-ui');
-    }
+    if (e.target === stage) document.body.classList.toggle('hide-ui');
   });
 
-  /* ============================================================
-   * 12. 媒体事件同步
-   * ============================================================ */
   videoEl.addEventListener('play',  function () { updatePlayIcon(); showUI(); });
   videoEl.addEventListener('pause', updatePlayIcon);
-
   videoEl.addEventListener('ended', autoAdvance);
 
   videoEl.addEventListener('error', function () {
@@ -665,9 +764,6 @@
     showError('图片加载失败' + (it ? '：' + it.title : ''));
   });
 
-  /* ============================================================
-   * 13. 键盘快捷键
-   * ============================================================ */
   window.addEventListener('keydown', function (e) {
     if (e.key === 'ArrowLeft')  go(-1);
     if (e.key === 'ArrowRight') go(1);
@@ -675,9 +771,6 @@
     if (e.key.toLowerCase() === 'f') toggleFullscreen();
   });
 
-  /* ============================================================
-   * 14. 浏览器全屏（iframe 内需宿主页面加 allowfullscreen）
-   * ============================================================ */
   function toggleFullscreen() {
     try {
       if (!document.fullscreenElement) {
@@ -688,26 +781,114 @@
         var exit = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
         if (exit) { var r2 = exit.call(document); if (r2 && r2.catch) r2.catch(function () {}); }
       }
-    } catch (e) { /* 全屏被宿主页面禁止时忽略 */ }
+    } catch (e) { /* 忽略 */ }
   }
-
   stage.addEventListener('dblclick', toggleFullscreen);
 
-  /* ============================================================
-   * 15. 初始化
-   * ============================================================ */
-  load(CONFIG.startIndex, CONFIG.autoplay);
-  showUI();
+  function boot(list) {
+    CONFIG.playlist = (list && list.length) ? list : [];
 
-  /* 把当前播放项信息发给宿主页面（可选，方便父页面联动） */
-  try {
-    if (window.parent && window.parent !== window) {
-      window.parent.postMessage({
-        type: 'media-player-ready',
-        total: CONFIG.playlist.length
-      }, '*');
+    if (!CONFIG.playlist.length) {
+      titleEl.textContent = '无播放内容';
+      indexEl.textContent = '0 / 0';
+      showError('播放列表为空，请检查接口返回数据');
+      hideLoading();
+      return;
     }
-  } catch (e) { /* 忽略 */ }
+
+    load(CONFIG.startIndex, CONFIG.autoplay);
+    showUI();
+    hideLoading();
+
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({
+          type: 'media-player-ready',
+          total: CONFIG.playlist.length
+        }, '*');
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+
+  function requestPlaylist() {
+    return new Promise(function (resolve, reject) {
+      if (window.axios) {
+        var opt = {
+          method: API_CONFIG.method || 'get',
+          url: API_CONFIG.url,
+          timeout: API_CONFIG.timeout || 15000
+        };
+        if (API_CONFIG.headers) opt.headers = API_CONFIG.headers;
+        if (API_CONFIG.params) {
+          if (String(opt.method).toLowerCase() === 'post') opt.data = API_CONFIG.params;
+          else opt.params = API_CONFIG.params;
+        }
+
+        axios(opt).then(function (res) {
+          try {
+            var list = parseApiResponse(res);
+            var finalList = parseArray(list) || [];
+            resolve(finalList);
+          } catch (e) { reject(e); }
+        }).catch(reject);
+        return;
+      }
+
+      var finalUrl = API_CONFIG.url;
+      var method = String(API_CONFIG.method || 'get').toUpperCase();
+      var fOpt = { method: method };
+
+      if (API_CONFIG.headers) fOpt.headers = Object.assign({}, API_CONFIG.headers);
+
+      if (API_CONFIG.params) {
+        if (method === 'GET') {
+          var qs = new URLSearchParams(API_CONFIG.params).toString();
+          finalUrl += (finalUrl.indexOf('?') > -1 ? '&' : '?') + qs;
+        } else {
+          fOpt.headers = Object.assign({}, fOpt.headers, { 'Content-Type': 'application/json' });
+          fOpt.body = JSON.stringify(API_CONFIG.params);
+        }
+      }
+
+      fetch(finalUrl, fOpt)
+        .then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function (data) {
+          var list = parseApiResponse({ data: data });
+          var finalList = parseArray(list) || [];
+          resolve(finalList);
+        })
+        .catch(reject);
+    });
+  }
+
+  function init() {
+    if (CONFIG.playlist && CONFIG.playlist.length) {
+      boot(CONFIG.playlist);
+      return;
+    }
+
+    showLoading('加载播放列表');
+    requestPlaylist()
+      .then(function (list) {
+        if (!list || !list.length) throw new Error('接口返回数据为空或格式无法识别');
+        boot(list);
+      })
+      .catch(function (err) {
+        console.warn('[player] 接口请求失败：', err);
+        if (API_CONFIG.fallbackToDefault && DEFAULT_PLAYLIST.length) {
+          console.warn('[player] 已回退到默认播放列表');
+          boot(DEFAULT_PLAYLIST);
+        } else {
+          hideLoading();
+          showError('播放列表加载失败：' + (err && err.message ? err.message : '未知错误'));
+        }
+      });
+  }
+
+  init();
 
 })();
 </script>
