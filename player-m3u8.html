@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>M3U8 播放器</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #000;
+    font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .stage {
+    position: fixed;
+    inset: 0;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  .stage video {
+    max-width: 100%;
+    max-height: 100%;
+    display: block;
+    object-fit: contain;
+    user-select: none;
+    -webkit-user-drag: none;
+    cursor: pointer;
+  }
+
+  /* ===== 顶部信息条 ===== */
+  .topbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    padding: 18px 22px calc(18px + env(safe-area-inset-top, 0px));
+    color: #fff;
+    background: linear-gradient(to bottom, rgba(0,0,0,.7), transparent);
+    pointer-events: none;
+    z-index: 10;
+    transition: opacity .35s ease;
+  }
+
+  .topbar .title {
+    font-size: 16px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-shadow: 0 1px 4px rgba(0,0,0,.6);
+  }
+
+  .topbar .index {
+    font-size: 12px;
+    color: rgba(255,255,255,.65);
+    margin-top: 4px;
+    letter-spacing: 1px;
+  }
+
+  /* ===== 底部悬浮控制层 ===== */
+  .controls {
+    position: fixed;
+    left: 50%;
+    bottom: calc(26px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    padding: 12px 20px;
+    border-radius: 999px;
+    background: rgba(20, 20, 32, .45);
+    border: 1px solid rgba(255, 255, 255, .14);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .5);
+    z-index: 10;
+    transition: opacity .35s ease, transform .35s ease;
+  }
+
+  .controls button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 50px;
+    height: 50px;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, .1);
+    color: #fff;
+    cursor: pointer;
+    padding: 0;
+    transition: background .2s, transform .12s;
+  }
+
+  .controls button:hover { background: rgba(255, 255, 255, .24); }
+  .controls button:active { transform: scale(.9); }
+
+  .controls #playBtn {
+    width: 66px;
+    height: 66px;
+    background: linear-gradient(135deg, #6a5cff, #9b5cff);
+    box-shadow: 0 8px 22px rgba(106, 92, 255, .5);
+  }
+
+  .controls #playBtn:hover {
+    background: linear-gradient(135deg, #7a6cff, #ab6cff);
+  }
+
+  /* ===== 控件自动隐藏 ===== */
+  body.hide-ui .controls {
+    opacity: 0;
+    transform: translateX(-50%) translateY(16px);
+    pointer-events: none;
+  }
+  body.hide-ui .topbar { opacity: 0; }
+  body.hide-ui { cursor: none; }
+  body.hide-ui .vprogress { opacity: 0; }
+
+  /* ===== 视频进度条 ===== */
+  .vprogress {
+    position: fixed;
+    left: 0;
+    bottom: 0;
+    height: 4px;
+    width: 100%;
+    background: rgba(255,255,255,.18);
+    z-index: 11;
+    cursor: pointer;
+    display: none;
+    transition: opacity .35s ease;
+  }
+
+  .vprogress .bar {
+    height: 100%;
+    width: 0;
+    background: linear-gradient(90deg, #6a5cff, #9b5cff);
+    pointer-events: none;
+  }
+
+  /* ===== 中央播放按钮 ===== */
+  .center-play {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 88px;
+    height: 88px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(0, 0, 0, .45);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    color: #fff;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 9;
+    transition: background .2s, transform .15s;
+  }
+
+  .center-play:hover { background: rgba(0, 0, 0, .65); }
+  .center-play:active { transform: translate(-50%, -50%) scale(.92); }
+  .center-play.show { display: flex; }
+
+  /* ===== 加载中 ===== */
+  .loading {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    color: rgba(255,255,255,.7);
+    font-size: 14px;
+    letter-spacing: 1px;
+    z-index: 12;
+    display: none;
+    pointer-events: none;
+  }
+  .loading.show { display: block; }
+  .loading::after {
+    content: '';
+    display: inline-block;
+    width: 12px; height: 12px;
+    margin-left: 8px;
+    border: 2px solid rgba(255,255,255,.25);
+    border-top-color: #9b5cff;
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+    vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ===== 错误提示 ===== */
+  .err {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    max-width: 80%;
+    text-align: center;
+    color: #ff9b9b;
+    font-size: 14px;
+    line-height: 1.6;
+    display: none;
+    z-index: 12;
+    pointer-events: none;
+    text-shadow: 0 1px 4px rgba(0,0,0,.8);
+  }
+</style>
+</head>
+<body>
+
+  <div class="stage" id="stage">
+    <video id="video" playsinline webkit-playsinline preload="metadata"></video>
+  </div>
+
+  <div class="topbar" id="topbar">
+    <div class="title" id="title">未加载</div>
+    <div class="index" id="index">0 / 0</div>
+  </div>
+
+  <button class="center-play" id="centerPlay" title="播放">
+    <svg viewBox="0 0 24 24" width="40" height="40" fill="currentColor">
+      <path d="M8 5v14l11-7z"/>
+    </svg>
+  </button>
+
+  <div class="controls" id="controls">
+    <button id="prevBtn" title="上一个">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
+        <path d="M6 6h2v12H6zm12 0v12l-10-6z"/>
+      </svg>
+    </button>
+
+    <button id="playBtn" title="播放 / 暂停">
+      <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor">
+        <path d="M8 5v14l11-7z"/>
+      </svg>
+    </button>
+
+    <button id="nextBtn" title="下一个">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
+        <path d="M16 6h2v12h-2zM6 6l10 6-10 6z"/>
+      </svg>
+    </button>
+  </div>
+
+  <div class="vprogress" id="vprogress">
+    <div class="bar" id="vbar"></div>
+  </div>
+
+  <div class="loading" id="loading">加载中</div>
+
+  <div class="err" id="err"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  /* ============================================================================
+   *  M3U8 专用播放器
+   *
+   *  只从 URL 参数读取播放列表，只播放 m3u8。
+   *  无默认列表、无接口请求。
+   *
+   *  ── URL 参数 ──────────────────────────────────────────────────────────
+   *
+   *    playlist  播放列表（必需），条目间用 ; 分隔，每条支持两种写法：
+   *                地址
+   *                标题|地址
+   *
+   *    autoplay  1 / 0，是否自动播放（默认 0）
+   *    muted     1 / 0，是否静音（默认 0）
+   *    loop      1 / 0，播完是否从头循环（默认 1）
+   *    index     从第几项开始，从 0 计数（默认 0）
+   *    hide-delay 控件自动隐藏毫秒数（默认 2600，0 = 不隐藏）
+   *
+   *  ── 示例 ──────────────────────────────────────────────────────────────
+   *
+   *    player.html?playlist=https%3A%2F%2Fa.com%2F1.m3u8%3Bhttps%3A%2F%2Fb.com%2F2.m3u8
+   *
+   *    player.html?playlist=第一集|https%3A%2F%2Fa.com%2F1.m3u8%3B第二集|https%3A%2F%2Fb.com%2F2.m3u8&autoplay=1&muted=1
+   *
+   * ============================================================================ */
+
+
+  /* ============================================================================
+   *  1. 读取 URL 参数
+   * ============================================================================ */
+  var urlParams = new URLSearchParams(location.search);
+
+  function getParam(name) {
+    var v = urlParams.get(name);
+    if (v === null) return null;
+    v = String(v).trim();
+    return v === '' ? null : v;
+  }
+
+  function toBool(v, dft) {
+    if (v === null) return dft;
+    return /^(1|true|yes|on)$/i.test(String(v).trim());
+  }
+
+  function toInt(v, dft, min) {
+    if (v === null) return dft;
+    var n = parseInt(v, 10);
+    if (isNaN(n) || n < min) return dft;
+    return n;
+  }
+
+  var CONFIG = {
+    autoplay:  toBool(getParam('autoplay'), false),
+    muted:     toBool(getParam('muted'), false),
+    loop:      toBool(getParam('loop'), true),
+    startIndex: toInt(getParam('index'), 0, 0),
+    hideDelay: toInt(getParam('hide-delay'), 2600, 0)
+  };
+
+
+  /* ============================================================================
+   *  2. 解析 playlist 参数
+   *
+   *  只接受 m3u8 条目，其他后缀一律丢弃。
+   *  支持两种写法：
+   *    地址
+   *    标题|地址
+   * ============================================================================ */
+
+  function isM3u8(src) {
+    return /\.m3u8(\?|#|$)/i.test(String(src));
+  }
+
+  function filenameFrom(src) {
+    try {
+      var clean = String(src).split('?')[0].split('#')[0];
+      var base = clean.substring(clean.lastIndexOf('/') + 1);
+      return decodeURIComponent(base) || '';
+    } catch (e) { return ''; }
+  }
+
+  function parsePlaylistParam(raw) {
+    if (raw === null) return null;
+
+    var items = String(raw)
+      .split(/\s*;\s*/)
+      .map(function (s) { return s.trim(); })
+      .filter(function (s) { return s.length > 0; })
+      .map(function (line) {
+        var parts = line.split('|').map(function (s) { return s.trim(); });
+
+        var title = '';
+        var src = '';
+
+        if (parts.length === 1) {
+          src = parts[0];
+        } else {
+          title = parts[0];
+          src = parts.slice(1).join('|');
+        }
+
+        // 只保留 m3u8
+        if (!isM3u8(src)) {
+          console.warn('[player] 跳过非 m3u8 条目：', src);
+          return null;
+        }
+
+        if (!title) title = filenameFrom(src) || 'M3U8 视频';
+        return { title: title, src: src };
+      })
+      .filter(Boolean);
+
+    return items.length ? items : null;
+  }
+
+  var PLAYLIST = parsePlaylistParam(getParam('playlist'));
+
+
+  /* ============================================================================
+   *  3. 元素引用
+   * ============================================================================ */
+  var stage      = document.getElementById('stage');
+  var videoEl    = document.getElementById('video');
+  var titleEl    = document.getElementById('title');
+  var indexEl    = document.getElementById('index');
+  var playBtn    = document.getElementById('playBtn');
+  var prevBtn    = document.getElementById('prevBtn');
+  var nextBtn    = document.getElementById('nextBtn');
+  var centerPlay = document.getElementById('centerPlay');
+  var vprogress  = document.getElementById('vprogress');
+  var vbar       = document.getElementById('vbar');
+  var errEl      = document.getElementById('err');
+  var loadingEl  = document.getElementById('loading');
+
+  var ICON_PLAY  = '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+  var ICON_PAUSE = '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
+
+  var current   = 0;
+  var hideTimer = null;
+  var hls       = null;
+
+
+  /* ============================================================================
+   *  4. 工具函数
+   * ============================================================================ */
+  function currentItem() {
+    return PLAYLIST ? (PLAYLIST[current] || null) : null;
+  }
+
+  function isPlaying() {
+    return !!currentItem() && !videoEl.paused && !videoEl.ended;
+  }
+
+  function updatePlayIcon() {
+    var playing = isPlaying();
+    playBtn.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
+    centerPlay.classList.toggle('show', !playing && !!currentItem());
+  }
+
+  function showError(msg) { errEl.textContent = msg; errEl.style.display = 'block'; }
+  function hideError()    { errEl.style.display = 'none'; }
+  function showLoading(t) { loadingEl.textContent = t || '加载中'; loadingEl.classList.add('show'); }
+  function hideLoading()  { loadingEl.classList.remove('show'); }
+
+  function showUI() {
+    document.body.classList.remove('hide-ui');
+    clearTimeout(hideTimer);
+    if (CONFIG.hideDelay > 0) {
+      hideTimer = setTimeout(function () {
+        document.body.classList.add('hide-ui');
+      }, CONFIG.hideDelay);
+    }
+  }
+
+  ['mousemove', 'mousedown', 'touchstart', 'keydown', 'wheel'].forEach(function (evt) {
+    window.addEventListener(evt, showUI, { passive: true });
+  });
+
+
+  /* ============================================================================
+   *  5. 销毁 HLS 实例
+   * ============================================================================ */
+  function destroyHls() {
+    if (hls) {
+      try { hls.destroy(); } catch (e) {}
+      hls = null;
+    }
+  }
+
+
+  /* ============================================================================
+   *  6. 核心：加载第 index 项
+   * ============================================================================ */
+  function load(index, autoplay) {
+    if (!PLAYLIST || !PLAYLIST.length) return;
+
+    destroyHls();
+    videoEl.pause();
+    videoEl.removeAttribute('src');
+    videoEl.load();
+    hideError();
+
+    if (CONFIG.loop) {
+      current = ((index % PLAYLIST.length) + PLAYLIST.length) % PLAYLIST.length;
+    } else {
+      current = Math.max(0, Math.min(index, PLAYLIST.length - 1));
+    }
+
+    var item = PLAYLIST[current];
+    titleEl.textContent = item.title || '';
+    indexEl.textContent = (current + 1) + ' / ' + PLAYLIST.length;
+
+    videoEl.muted = CONFIG.muted;
+    videoEl.style.display = 'block';
+    vprogress.style.display = 'block';
+    showLoading('加载中');
+
+    var tryPlay = function () {
+      if (!autoplay) { updatePlayIcon(); return; }
+      var p = videoEl.play();
+      if (p && p.catch) p.catch(function () { updatePlayIcon(); });
+    };
+
+    if (window.Hls && window.Hls.isSupported()) {
+      /* ---- Chrome / Edge / Firefox：hls.js ---- */
+      hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: false,
+        backBufferLength: 30,
+        maxBufferLength: 30
+      });
+
+      hls.loadSource(item.src);
+      hls.attachMedia(videoEl);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, function () {
+        hideLoading();
+        tryPlay();
+        updatePlayIcon();
+      });
+
+      hls.on(Hls.Events.ERROR, function (evt, data) {
+        if (!data || !data.fatal) return;
+        switch (data.type) {
+          case Hls.ErrorTypes.NETWORK_ERROR:
+            console.warn('[hls] 网络错误，尝试恢复', data);
+            hls.startLoad();
+            break;
+          case Hls.ErrorTypes.MEDIA_ERROR:
+            console.warn('[hls] 媒体错误，尝试恢复', data);
+            hls.recoverMediaError();
+            break;
+          default:
+            console.error('[hls] 无法恢复的错误', data);
+            hideLoading();
+            showError('视频加载失败：' + (item.title || ''));
+            destroyHls();
+            updatePlayIcon();
+            break;
+        }
+      });
+
+    } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
+      /* ---- Safari / iOS：原生 HLS ---- */
+      videoEl.src = item.src;
+
+      videoEl.addEventListener('loadedmetadata', function onMeta() {
+        videoEl.removeEventListener('loadedmetadata', onMeta);
+        hideLoading();
+        tryPlay();
+        updatePlayIcon();
+      });
+
+    } else {
+      /* ---- 都不支持 ---- */
+      hideLoading();
+      showError('当前浏览器不支持播放 m3u8');
+      updatePlayIcon();
+    }
+
+    showUI();
+  }
+
+
+  /* ============================================================================
+   *  7. 切换
+   * ============================================================================ */
+  function autoAdvance() {
+    if (!PLAYLIST || !PLAYLIST.length) return;
+    var next = current + 1;
+    if (next >= PLAYLIST.length) {
+      if (!CONFIG.loop) { updatePlayIcon(); return; }
+      next = 0;
+    }
+    load(next, true);
+  }
+
+  function go(step) {
+    if (!PLAYLIST || !PLAYLIST.length) return;
+    var keepPlaying = isPlaying();
+    var next = current + step;
+
+    if (!CONFIG.loop) {
+      next = Math.max(0, Math.min(next, PLAYLIST.length - 1));
+      if (next === current) return;
+    }
+    load(next, keepPlaying);
+  }
+
+
+  /* ============================================================================
+   *  8. 事件
+   * ============================================================================ */
+  videoEl.addEventListener('timeupdate', function () {
+    if (!videoEl.duration || !isFinite(videoEl.duration)) return;
+    vbar.style.width = (videoEl.currentTime / videoEl.duration * 100) + '%';
+  });
+
+  vprogress.addEventListener('click', function (e) {
+    e.stopPropagation();
+    if (!videoEl.duration || !isFinite(videoEl.duration)) return;
+    var rect = vprogress.getBoundingClientRect();
+    var ratio = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1);
+    videoEl.currentTime = ratio * videoEl.duration;
+    showUI();
+  });
+
+  playBtn.addEventListener('click', function () {
+    if (!currentItem()) return;
+    if (videoEl.paused) {
+      var p = videoEl.play();
+      if (p && p.catch) p.catch(function () {});
+    } else {
+      videoEl.pause();
+    }
+    updatePlayIcon();
+    showUI();
+  });
+
+  prevBtn.addEventListener('click', function () { go(-1); });
+  nextBtn.addEventListener('click', function () { go(1); });
+
+  centerPlay.addEventListener('click', function () { playBtn.click(); });
+  videoEl.addEventListener('click', function () { playBtn.click(); });
+
+  stage.addEventListener('click', function (e) {
+    if (e.target === stage) document.body.classList.toggle('hide-ui');
+  });
+
+  videoEl.addEventListener('play',  function () { updatePlayIcon(); hideLoading(); showUI(); });
+  videoEl.addEventListener('pause', updatePlayIcon);
+  videoEl.addEventListener('waiting', function () { showLoading('缓冲中'); });
+  videoEl.addEventListener('playing', function () { hideLoading(); });
+  videoEl.addEventListener('canplay', function () { hideLoading(); });
+  videoEl.addEventListener('ended', autoAdvance);
+
+  videoEl.addEventListener('error', function () {
+    // hls.js 模式下，video 的 error 通常由 hls 自己的 ERROR 事件处理，
+    // 这里只处理原生 HLS 或断源的情况
+    if (hls) return;
+    var it = currentItem();
+    hideLoading();
+    showError('视频加载失败' + (it ? '：' + it.title : ''));
+    updatePlayIcon();
+  });
+
+
+  /* ============================================================================
+   *  9. 键盘 & 全屏
+   * ============================================================================ */
+  window.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowLeft')  go(-1);
+    if (e.key === 'ArrowRight') go(1);
+    if (e.key === ' ') { e.preventDefault(); playBtn.click(); }
+    if (e.key.toLowerCase() === 'f') toggleFullscreen();
+  });
+
+  function toggleFullscreen() {
+    try {
+      if (!document.fullscreenElement) {
+        var el = document.documentElement;
+        var req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+        if (req) { var r = req.call(el); if (r && r.catch) r.catch(function () {}); }
+      } else {
+        var exit = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
+        if (exit) { var r2 = exit.call(document); if (r2 && r2.catch) r2.catch(function () {}); }
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+  stage.addEventListener('dblclick', toggleFullscreen);
+
+
+  /* ============================================================================
+   *  10. 启动
+   * ============================================================================ */
+  function boot() {
+    if (!PLAYLIST || !PLAYLIST.length) {
+      titleEl.textContent = '未加载';
+      indexEl.textContent = '0 / 0';
+      showError('未提供有效的 m3u8 播放地址\n请在 URL 中传入 playlist 参数');
+      hideLoading();
+      return;
+    }
+
+    load(CONFIG.startIndex, CONFIG.autoplay);
+    showUI();
+
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({
+          type: 'media-player-ready',
+          total: PLAYLIST.length
+        }, '*');
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+
+  boot();
+
+})();
+</script>
+
+</body>
+</html>
